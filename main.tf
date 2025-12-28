@@ -2,45 +2,56 @@ provider "aws" {
   region = "us-east-1"
 }
 
-# 1. إنشاء شبكة VPC مخصصة للـ Kubernetes
-module "vpc" {
-  source  = "terraform-aws-modules/vpc/aws"
-  version = "5.0.0"
+# 1. مجموعة أمان تفتح المنافذ الضرورية لـ Docker و Kubernetes البسيط (K3s)
+resource "aws_security_group" "devops_sg_v3" {
+  name        = "devops-platform-sg-v3"
+  description = "Security group for our DevSecOps platform"
 
-  name = "devops-project-vpc"
-  cidr = "10.0.0.0/16"
+  ingress {
+    from_port   = 80
+    to_port     = 80
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
 
-  azs             = ["us-east-1a", "us-east-1b"]
-  private_subnets = ["10.0.1.0/24", "10.0.2.0/24"]
-  public_subnets  = ["10.0.101.0/24", "10.0.102.0/24"]
+  ingress {
+    from_port   = 22
+    to_port     = 22
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
 
-  enable_nat_gateway = true
-  single_nat_gateway = true
-  
-  public_subnet_tags = {
-    "kubernetes.io/role/elb" = 1
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
   }
 }
 
-# 2. إنشاء الـ EKS Cluster
-module "eks" {
-  source  = "terraform-aws-modules/eks/aws"
-  version = "19.15.3"
+# 2. إنشاء سيرفر بمواصفات تسمح بتشغيل Docker و ArgoCD لاحقاً
+resource "aws_instance" "devops_node" {
+  ami           = "ami-0c02fb55956c7d316" # Amazon Linux 2
+  instance_type = "t3.medium" # مواصفات متوسطة لتشغيل أدواتك
+  
+  vpc_security_group_ids = [aws_security_group.devops_sg_v3.id]
 
-  cluster_name    = "devops-advanced-cluster"
-  cluster_version = "1.27"
+  user_data = <<-EOF
+              #!/bin/bash
+              yum update -y
+              amazon-linux-extras install docker -y
+              systemctl start docker
+              systemctl enable docker
+              usermod -a -G docker ec2-user
+              # تثبيت K3s (نسخة خفيفة من Kubernetes لـ GitOps)
+              curl -sfL https://get.k3s.io | sh -
+              EOF
 
-  vpc_id                         = module.vpc.vpc_id
-  subnet_ids                     = module.vpc.private_subnets
-  cluster_endpoint_public_access = true
-
-  eks_managed_node_groups = {
-    nodes = {
-      min_size     = 1
-      max_size     = 2
-      desired_size = 1
-
-      instance_types = ["t3.medium"] # الـ Nodes تحتاج ذاكرة أكبر من t2.micro
-    }
+  tags = {
+    Name = "DevOps-GitOps-Node"
   }
+}
+
+output "node_public_ip" {
+  value = aws_instance.devops_node.public_ip
 }
